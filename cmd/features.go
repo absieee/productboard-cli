@@ -10,6 +10,7 @@ import (
 	"github.com/aveni/pb-cli/api/entities"
 	"github.com/aveni/pb-cli/output"
 	"github.com/google/uuid"
+	openapi_types "github.com/oapi-codegen/runtime/types"
 	"github.com/spf13/cobra"
 )
 
@@ -51,6 +52,99 @@ func AddFeaturesCmd(parent *cobra.Command, serverURL string, tokenFn func() stri
 	listCmd.Flags().StringVar(&statusFilter, "status", "", "Filter by status name")
 
 	featuresCmd.AddCommand(listCmd)
+
+	// --- get ---
+	getCmd := &cobra.Command{
+		Use:   "get <id>",
+		Short: "Get a feature by ID",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			tok := tokenFn()
+			httpClient := AuthedHTTPClient(tok)
+			client, err := entities.NewClientWithResponses(serverURL,
+				entities.WithHTTPClient(httpClient),
+			)
+			if err != nil {
+				return fmt.Errorf("build client: %w", err)
+			}
+			return runFeaturesGet(cmd.OutOrStdout(), client, args[0])
+		},
+	}
+	featuresCmd.AddCommand(getCmd)
+
+	// --- create ---
+	var createName string
+	var createComponent string
+	var createDescription string
+
+	createCmd := &cobra.Command{
+		Use:   "create",
+		Short: "Create a new feature",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if createName == "" {
+				return fmt.Errorf("--name is required")
+			}
+			tok := tokenFn()
+			httpClient := AuthedHTTPClient(tok)
+			client, err := entities.NewClientWithResponses(serverURL,
+				entities.WithHTTPClient(httpClient),
+			)
+			if err != nil {
+				return fmt.Errorf("build client: %w", err)
+			}
+			return runFeaturesCreate(cmd.OutOrStdout(), client, createName, createComponent, createDescription)
+		},
+	}
+	createCmd.Flags().StringVar(&createName, "name", "", "Feature name (required)")
+	createCmd.Flags().StringVar(&createComponent, "component", defaultComponentID, "Parent component ID")
+	createCmd.Flags().StringVar(&createDescription, "description", "", "Feature description (HTML)")
+	featuresCmd.AddCommand(createCmd)
+
+	// --- update ---
+	var updateName string
+	var updateStatus string
+	var updateDescription string
+
+	updateCmd := &cobra.Command{
+		Use:   "update <id>",
+		Short: "Update a feature by ID",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			tok := tokenFn()
+			httpClient := AuthedHTTPClient(tok)
+			client, err := entities.NewClientWithResponses(serverURL,
+				entities.WithHTTPClient(httpClient),
+			)
+			if err != nil {
+				return fmt.Errorf("build client: %w", err)
+			}
+			return runFeaturesUpdate(cmd.OutOrStdout(), client, args[0], updateName, updateStatus, updateDescription)
+		},
+	}
+	updateCmd.Flags().StringVar(&updateName, "name", "", "New feature name")
+	updateCmd.Flags().StringVar(&updateStatus, "status", "", "New status name")
+	updateCmd.Flags().StringVar(&updateDescription, "description", "", "New description (HTML)")
+	featuresCmd.AddCommand(updateCmd)
+
+	// --- delete ---
+	deleteCmd := &cobra.Command{
+		Use:   "delete <id>",
+		Short: "Delete a feature by ID",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			tok := tokenFn()
+			httpClient := AuthedHTTPClient(tok)
+			client, err := entities.NewClientWithResponses(serverURL,
+				entities.WithHTTPClient(httpClient),
+			)
+			if err != nil {
+				return fmt.Errorf("build client: %w", err)
+			}
+			return runFeaturesDelete(cmd.OutOrStdout(), client, args[0])
+		},
+	}
+	featuresCmd.AddCommand(deleteCmd)
+
 	parent.AddCommand(featuresCmd)
 }
 
@@ -177,4 +271,187 @@ func extractOwner(e entities.Entity) string {
 		return ""
 	}
 	return mv.Email
+}
+
+func runFeaturesGet(w io.Writer, client *entities.ClientWithResponses, id string) error {
+	uid, err := uuid.Parse(id)
+	if err != nil {
+		return fmt.Errorf("invalid ID %q: %w", id, err)
+	}
+
+	params := &entities.GetEntityParams{}
+	resp, err := client.GetEntityWithResponse(context.Background(), uid, params)
+	if err != nil {
+		return fmt.Errorf("API request failed: %w", err)
+	}
+	if resp.JSON200 == nil {
+		return fmt.Errorf("unexpected API response %d: %s", resp.StatusCode(), string(resp.Body))
+	}
+
+	return output.JSON(w, resp.JSON200)
+}
+
+func runFeaturesCreate(w io.Writer, client *entities.ClientWithResponses, name, componentID, description string) error {
+	featureType := entities.Feature
+
+	fields := entities.EntityCreateOrUpdateFields{}
+
+	var nameField entities.EntityCreateOrUpdateFieldValue
+	if err := nameField.FromNameFieldValue(name); err != nil {
+		return fmt.Errorf("build name field: %w", err)
+	}
+	fields["name"] = nameField
+
+	if description != "" {
+		var descField entities.EntityCreateOrUpdateFieldValue
+		if err := descField.FromRichTextFieldValue(description); err != nil {
+			return fmt.Errorf("build description field: %w", err)
+		}
+		fields["description"] = descField
+	}
+
+	// Always set owner to abhishek.sharma@aveni.ai
+	var ma entities.MemberFieldAssign
+	if err := ma.FromMemberAssignByEmail(entities.MemberAssignByEmail{
+		Email: openapi_types.Email("abhishek.sharma@aveni.ai"),
+	}); err != nil {
+		return fmt.Errorf("build owner field: %w", err)
+	}
+	var ownerField entities.EntityCreateOrUpdateFieldValue
+	if err := ownerField.FromMemberFieldAssign(ma); err != nil {
+		return fmt.Errorf("build owner field value: %w", err)
+	}
+	fields["owner"] = ownerField
+
+	// Build parent relationship
+	var rels []entities.EntityRelationshipCreate
+	if componentID != "" {
+		componentUID, err := uuid.Parse(componentID)
+		if err != nil {
+			return fmt.Errorf("invalid component ID %q: %w", componentID, err)
+		}
+		parentType := entities.Parent
+		rels = []entities.EntityRelationshipCreate{
+			{
+				Target: entities.ResourceReferenceAssign{Id: &componentUID},
+				Type:   &parentType,
+			},
+		}
+	}
+
+	body := entities.CreateEntityJSONRequestBody{
+		Data: &struct {
+			Fields        *entities.EntityCreateOrUpdateFields `json:"fields,omitempty"`
+			Metadata      *entities.EntityMetadata             `json:"metadata,omitempty"`
+			Relationships *[]entities.EntityRelationshipCreate `json:"relationships,omitempty"`
+			Type          *entities.EntityType                 `json:"type,omitempty"`
+		}{
+			Fields:        &fields,
+			Type:          &featureType,
+			Relationships: &rels,
+		},
+	}
+
+	resp, err := client.CreateEntityWithResponse(context.Background(), body)
+	if err != nil {
+		return fmt.Errorf("API request failed: %w", err)
+	}
+	if resp.JSON201 == nil {
+		return fmt.Errorf("unexpected API response %d: %s", resp.StatusCode(), string(resp.Body))
+	}
+
+	if jsonOutput {
+		return output.JSON(w, resp.JSON201)
+	}
+
+	if resp.JSON201.Data != nil {
+		fmt.Fprintf(w, "Created feature: %s\n", resp.JSON201.Data.Id)
+	} else {
+		fmt.Fprintln(w, "Feature created successfully")
+	}
+	return nil
+}
+
+func runFeaturesUpdate(w io.Writer, client *entities.ClientWithResponses, id, name, statusName, description string) error {
+	uid, err := uuid.Parse(id)
+	if err != nil {
+		return fmt.Errorf("invalid ID %q: %w", id, err)
+	}
+
+	fields := entities.EntityCreateOrUpdateFields{}
+
+	if name != "" {
+		var nameField entities.EntityCreateOrUpdateFieldValue
+		if err := nameField.FromNameFieldValue(name); err != nil {
+			return fmt.Errorf("build name field: %w", err)
+		}
+		fields["name"] = nameField
+	}
+
+	if description != "" {
+		var descField entities.EntityCreateOrUpdateFieldValue
+		if err := descField.FromRichTextFieldValue(description); err != nil {
+			return fmt.Errorf("build description field: %w", err)
+		}
+		fields["description"] = descField
+	}
+
+	if statusName != "" {
+		var sa entities.StatusFieldAssign
+		if err := sa.FromStatusFieldAssignByName(entities.StatusFieldAssignByName{Name: statusName}); err != nil {
+			return fmt.Errorf("build status field: %w", err)
+		}
+		var statusField entities.EntityCreateOrUpdateFieldValue
+		if err := statusField.FromStatusFieldAssign(sa); err != nil {
+			return fmt.Errorf("build status field value: %w", err)
+		}
+		fields["status"] = statusField
+	}
+
+	body := entities.UpdateEntityJSONRequestBody{
+		Data: &struct {
+			Fields   *entities.EntityCreateOrUpdateFields `json:"fields,omitempty"`
+			Metadata *entities.EntityMetadata             `json:"metadata,omitempty"`
+			Patch    *entities.EntityPatch                `json:"patch,omitempty"`
+		}{
+			Fields: &fields,
+		},
+	}
+
+	resp, err := client.UpdateEntityWithResponse(context.Background(), uid, body)
+	if err != nil {
+		return fmt.Errorf("API request failed: %w", err)
+	}
+	if resp.JSON200 == nil {
+		return fmt.Errorf("unexpected API response %d: %s", resp.StatusCode(), string(resp.Body))
+	}
+
+	if jsonOutput {
+		return output.JSON(w, resp.JSON200)
+	}
+
+	if resp.JSON200.Data != nil {
+		fmt.Fprintf(w, "Updated feature: %s\n", resp.JSON200.Data.Id)
+	} else {
+		fmt.Fprintln(w, "Feature updated successfully")
+	}
+	return nil
+}
+
+func runFeaturesDelete(w io.Writer, client *entities.ClientWithResponses, id string) error {
+	uid, err := uuid.Parse(id)
+	if err != nil {
+		return fmt.Errorf("invalid ID %q: %w", id, err)
+	}
+
+	resp, err := client.DeleteEntityWithResponse(context.Background(), uid)
+	if err != nil {
+		return fmt.Errorf("API request failed: %w", err)
+	}
+	if resp.StatusCode() != 204 {
+		return fmt.Errorf("unexpected API response %d: %s", resp.StatusCode(), string(resp.Body))
+	}
+
+	fmt.Fprintf(w, "deleted %s\n", id)
+	return nil
 }
