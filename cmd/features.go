@@ -373,6 +373,10 @@ func runFeaturesCreate(w io.Writer, client *entities.ClientWithResponses, name, 
 }
 
 func runFeaturesUpdate(w io.Writer, client *entities.ClientWithResponses, id, name, statusName, description string) error {
+	if name == "" && statusName == "" && description == "" {
+		return fmt.Errorf("at least one of --name, --status, or --description must be provided")
+	}
+
 	uid, err := uuid.Parse(id)
 	if err != nil {
 		return fmt.Errorf("invalid ID %q: %w", id, err)

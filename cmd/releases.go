@@ -120,7 +120,7 @@ func runReleasesCreate(w io.Writer, client *entities.ClientWithResponses, name, 
 
 	if description != "" {
 		var descField entities.EntityCreateOrUpdateFieldValue
-		if err := descField.FromNameFieldValue(description); err != nil {
+		if err := descField.FromRichTextFieldValue(description); err != nil {
 			return fmt.Errorf("build description field: %w", err)
 		}
 		fields["description"] = descField
