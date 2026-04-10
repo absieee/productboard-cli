@@ -8,7 +8,9 @@ import (
 )
 
 func main() {
-	if err := cmd.NewRootCmd().Execute(); err != nil {
+	root := cmd.NewRootCmd()
+	cmd.AddFeaturesCmd(root, cmd.BaseURL, cmd.ResolvedToken)
+	if err := root.Execute(); err != nil {
 		os.Exit(1)
 	}
 }
