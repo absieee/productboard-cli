@@ -1,0 +1,6 @@
+package: entities
+generate:
+  client: true
+  models: true
+  embedded-spec: false
+output: api/entities/client.gen.go

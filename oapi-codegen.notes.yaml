@@ -1,0 +1,6 @@
+package: notes
+generate:
+  client: true
+  models: true
+  embedded-spec: false
+output: api/notes/client.gen.go
