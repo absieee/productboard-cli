@@ -30,7 +30,7 @@ echo "your-token" > ~/.config/pb/token
 chmod 600 ~/.config/pb/token
 ```
 
-Or pass it per-command:
+Or pass it per-command (the longest way):
 
 ```bash
 pb --token "your-token" features list
@@ -53,6 +53,9 @@ pb features create --name "My Feature"   # create in Agent Assure
 pb features create --name "My Feature" --component <id> --description "<p>HTML</p>"
 pb features update <id> --name "New Name"
 pb features update <id> --status done
+pb features update <id> --health onTrack
+pb features update <id> --health atRisk --health-comment "<p>Blocked on infra work</p>"
+pb features update <id> --health-comment "<p>Still on track, minor delays</p>"
 pb features delete <id>
 ```
 
@@ -84,11 +87,13 @@ pb objectives list
 
 ## Global Flags
 
-| Flag | Description |
-|------|-------------|
-| `--json` | Output raw JSON (for `jq`, scripts) |
+
+| Flag        | Description                             |
+| ----------- | --------------------------------------- |
+| `--json`    | Output raw JSON (for `jq`, scripts)     |
 | `--id-only` | One ID per line (for `xargs` pipelines) |
-| `--token` | API token (overrides env/config) |
+| `--token`   | API token (overrides env/config)        |
+
 
 ## Defaults
 
