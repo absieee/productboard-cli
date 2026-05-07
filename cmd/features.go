@@ -104,6 +104,8 @@ func AddFeaturesCmd(parent *cobra.Command, serverURL string, tokenFn func() stri
 	var updateName string
 	var updateStatus string
 	var updateDescription string
+	var updateHealth string
+	var updateHealthComment string
 
 	updateCmd := &cobra.Command{
 		Use:   "update <id>",
@@ -118,12 +120,14 @@ func AddFeaturesCmd(parent *cobra.Command, serverURL string, tokenFn func() stri
 			if err != nil {
 				return fmt.Errorf("build client: %w", err)
 			}
-			return runFeaturesUpdate(cmd.OutOrStdout(), client, args[0], updateName, updateStatus, updateDescription)
+			return runFeaturesUpdate(cmd.OutOrStdout(), client, args[0], updateName, updateStatus, updateDescription, updateHealth, updateHealthComment)
 		},
 	}
 	updateCmd.Flags().StringVar(&updateName, "name", "", "New feature name")
 	updateCmd.Flags().StringVar(&updateStatus, "status", "", "New status name")
 	updateCmd.Flags().StringVar(&updateDescription, "description", "", "New description (HTML)")
+	updateCmd.Flags().StringVar(&updateHealth, "health", "", "Health status: onTrack, atRisk, offTrack, notSet")
+	updateCmd.Flags().StringVar(&updateHealthComment, "health-comment", "", "Comment for the health update (HTML)")
 	featuresCmd.AddCommand(updateCmd)
 
 	// --- delete ---
@@ -372,9 +376,9 @@ func runFeaturesCreate(w io.Writer, client *entities.ClientWithResponses, name, 
 	return nil
 }
 
-func runFeaturesUpdate(w io.Writer, client *entities.ClientWithResponses, id, name, statusName, description string) error {
-	if name == "" && statusName == "" && description == "" {
-		return fmt.Errorf("at least one of --name, --status, or --description must be provided")
+func runFeaturesUpdate(w io.Writer, client *entities.ClientWithResponses, id, name, statusName, description, health, healthComment string) error {
+	if name == "" && statusName == "" && description == "" && health == "" && healthComment == "" {
+		return fmt.Errorf("at least one of --name, --status, --description, --health, or --health-comment must be provided")
 	}
 
 	uid, err := uuid.Parse(id)
@@ -410,6 +414,27 @@ func runFeaturesUpdate(w io.Writer, client *entities.ClientWithResponses, id, na
 			return fmt.Errorf("build status field value: %w", err)
 		}
 		fields["status"] = statusField
+	}
+
+	if health != "" || healthComment != "" {
+		mode := entities.HealthModeEnumManual
+		hv := entities.HealthUpdateFieldValue{Mode: &mode}
+		if health != "" {
+			hs := entities.HealthStatusEnum(health)
+			if !hs.Valid() {
+				return fmt.Errorf("invalid --health value %q: must be one of onTrack, atRisk, offTrack, notSet", health)
+			}
+			hv.Status = &hs
+		}
+		if healthComment != "" {
+			comment := entities.RichTextFieldValue(healthComment)
+			hv.Comment = &comment
+		}
+		var healthField entities.EntityCreateOrUpdateFieldValue
+		if err := healthField.FromHealthUpdateFieldValue(hv); err != nil {
+			return fmt.Errorf("build health field: %w", err)
+		}
+		fields["health"] = healthField
 	}
 
 	body := entities.UpdateEntityJSONRequestBody{

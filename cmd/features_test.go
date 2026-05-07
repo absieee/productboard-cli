@@ -142,6 +142,58 @@ func TestFeaturesUpdateSuccess(t *testing.T) {
 	}
 }
 
+func TestFeaturesUpdateHealth(t *testing.T) {
+	var captured map[string]any
+	resp := map[string]any{
+		"data": map[string]any{
+			"id": "11111111-1111-1111-1111-111111111111",
+		},
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewDecoder(r.Body).Decode(&captured)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+	}))
+	defer srv.Close()
+
+	root := &cobra.Command{Use: "pb", PersistentPreRunE: func(cmd *cobra.Command, args []string) error { return nil }}
+	var buf bytes.Buffer
+	root.SetOut(&buf)
+	root.SetErr(&buf)
+	cmd.AddFeaturesCmd(root, srv.URL, func() string { return "test-token" })
+
+	root.SetArgs([]string{"features", "update", "11111111-1111-1111-1111-111111111111", "--health", "onTrack", "--health-comment", "<p>Looking good</p>"})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("unexpected error: %v\nOutput: %s", err, buf.String())
+	}
+
+	fields, _ := captured["data"].(map[string]any)["fields"].(map[string]any)
+	health, _ := fields["health"].(map[string]any)
+	if health["status"] != "onTrack" {
+		t.Errorf("expected health.status=onTrack, got %v", health["status"])
+	}
+	if health["mode"] != "manual" {
+		t.Errorf("expected health.mode=manual, got %v", health["mode"])
+	}
+	if health["comment"] != "<p>Looking good</p>" {
+		t.Errorf("expected health.comment=<p>Looking good</p>, got %v", health["comment"])
+	}
+}
+
+func TestFeaturesUpdateHealthInvalid(t *testing.T) {
+	root := &cobra.Command{Use: "pb", PersistentPreRunE: func(cmd *cobra.Command, args []string) error { return nil }}
+	var buf bytes.Buffer
+	root.SetOut(&buf)
+	root.SetErr(&buf)
+	cmd.AddFeaturesCmd(root, "http://unused", func() string { return "test-token" })
+
+	root.SetArgs([]string{"features", "update", "11111111-1111-1111-1111-111111111111", "--health", "badvalue"})
+	err := root.Execute()
+	if err == nil || !strings.Contains(err.Error(), "invalid --health value") {
+		t.Errorf("expected invalid health error, got: %v", err)
+	}
+}
+
 func TestFeaturesListRendersTable(t *testing.T) {
 	// Minimal v2 entities list response
 	resp := map[string]any{
