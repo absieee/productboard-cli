@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"strings"
+	"time"
 
 	"github.com/aveni/pb-cli/api/entities"
 	"github.com/aveni/pb-cli/output"
@@ -17,7 +19,79 @@ import (
 const (
 	defaultComponentID = "060e336f-2149-4c06-8e42-0c87b7d987b8" // Agent Assure
 	defaultProductID   = "c48c1312-9da5-4b75-b6b1-824ce6837894" // Assurance
+	defaultAATag       = "Agent Assure"                         // tag applied by `features new`
 )
+
+// parseTagList splits a comma-separated tag list and trims whitespace.
+// Empty entries are skipped.
+func parseTagList(s string) []string {
+	if s == "" {
+		return nil
+	}
+	parts := strings.Split(s, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		t := strings.TrimSpace(p)
+		if t != "" {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
+// buildTimeframe builds a TimeframeFieldValue from ISO date strings and an optional granularity.
+// If both startISO and endISO are empty, returns ok=false.
+func buildTimeframe(startISO, endISO, granularity string) (entities.EntityCreateOrUpdateFieldValue, bool, error) {
+	var v entities.EntityCreateOrUpdateFieldValue
+	if startISO == "" && endISO == "" {
+		return v, false, nil
+	}
+	tf := entities.TimeframeFieldValue{}
+	if startISO != "" {
+		t, err := time.Parse("2006-01-02", startISO)
+		if err != nil {
+			return v, false, fmt.Errorf("invalid --start %q: %w", startISO, err)
+		}
+		d := openapi_types.Date{Time: t}
+		tf.StartDate = &d
+	}
+	if endISO != "" {
+		t, err := time.Parse("2006-01-02", endISO)
+		if err != nil {
+			return v, false, fmt.Errorf("invalid --end %q: %w", endISO, err)
+		}
+		d := openapi_types.Date{Time: t}
+		tf.EndDate = &d
+	}
+	if granularity != "" {
+		g := entities.GranularityFieldValue(granularity)
+		if !g.Valid() {
+			return v, false, fmt.Errorf("invalid --granularity %q: must be year|quarter|month|day", granularity)
+		}
+		tf.Granularity = &g
+	}
+	if err := v.FromTimeframeFieldValue(tf); err != nil {
+		return v, false, fmt.Errorf("build timeframe field: %w", err)
+	}
+	return v, true, nil
+}
+
+// buildTagsAssign builds a MultiSelectFieldAssign field value referencing tags by name.
+func buildTagsAssign(tagNames []string) (entities.EntityCreateOrUpdateFieldValue, error) {
+	var v entities.EntityCreateOrUpdateFieldValue
+	items := make(entities.MultiSelectFieldAssign, 0, len(tagNames))
+	for _, name := range tagNames {
+		var item entities.MultiSelectFieldAssign_Item
+		if err := item.FromSingleSelectFieldAssignByName(entities.SingleSelectFieldAssignByName{Name: name}); err != nil {
+			return v, fmt.Errorf("build tag %q: %w", name, err)
+		}
+		items = append(items, item)
+	}
+	if err := v.FromMultiSelectFieldAssign(items); err != nil {
+		return v, fmt.Errorf("build tags field: %w", err)
+	}
+	return v, nil
+}
 
 // AddFeaturesCmd registers the `features` sub-command tree on parent.
 // serverURL is the base API URL; tokenFn is called at runtime to get the bearer token.
@@ -76,6 +150,8 @@ func AddFeaturesCmd(parent *cobra.Command, serverURL string, tokenFn func() stri
 	var createName string
 	var createComponent string
 	var createDescription string
+	var createTags string
+	var createStart, createEnd, createGranularity string
 
 	createCmd := &cobra.Command{
 		Use:   "create",
@@ -92,13 +168,51 @@ func AddFeaturesCmd(parent *cobra.Command, serverURL string, tokenFn func() stri
 			if err != nil {
 				return fmt.Errorf("build client: %w", err)
 			}
-			return runFeaturesCreate(cmd.OutOrStdout(), client, createName, createComponent, createDescription)
+			return runFeaturesCreate(cmd.OutOrStdout(), client, createName, createComponent, createDescription, parseTagList(createTags), createStart, createEnd, createGranularity)
 		},
 	}
 	createCmd.Flags().StringVar(&createName, "name", "", "Feature name (required)")
 	createCmd.Flags().StringVar(&createComponent, "component", defaultComponentID, "Parent component ID")
 	createCmd.Flags().StringVar(&createDescription, "description", "", "Feature description (HTML)")
+	createCmd.Flags().StringVar(&createTags, "tags", "", "Comma-separated tag names to apply on create")
+	createCmd.Flags().StringVar(&createStart, "start", "", "Timeframe start date (YYYY-MM-DD)")
+	createCmd.Flags().StringVar(&createEnd, "end", "", "Timeframe end date (YYYY-MM-DD)")
+	createCmd.Flags().StringVar(&createGranularity, "granularity", "", "Timeframe granularity: year|quarter|month|day")
 	featuresCmd.AddCommand(createCmd)
+
+	// --- new (templated: Assurance / Agent Assure component, "Agent Assure" tag) ---
+	var newName string
+	var newDescription string
+	var newExtraTags string
+	var newStart, newEnd, newGranularity string
+	newCmd := &cobra.Command{
+		Use:   "new",
+		Short: "Create a feature under Assurance/Agent Assure with the \"Agent Assure\" tag applied",
+		Long: "Templated create. Defaults the parent component to Agent Assure (under Assurance)\n" +
+			"and always applies the \"Agent Assure\" tag. Add extra tags with --extra-tags.",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if newName == "" {
+				return fmt.Errorf("--name is required")
+			}
+			tok := tokenFn()
+			httpClient := AuthedHTTPClient(tok)
+			client, err := entities.NewClientWithResponses(serverURL,
+				entities.WithHTTPClient(httpClient),
+			)
+			if err != nil {
+				return fmt.Errorf("build client: %w", err)
+			}
+			tags := append([]string{defaultAATag}, parseTagList(newExtraTags)...)
+			return runFeaturesCreate(cmd.OutOrStdout(), client, newName, defaultComponentID, newDescription, tags, newStart, newEnd, newGranularity)
+		},
+	}
+	newCmd.Flags().StringVar(&newName, "name", "", "Feature name (required)")
+	newCmd.Flags().StringVar(&newDescription, "description", "", "Feature description (HTML)")
+	newCmd.Flags().StringVar(&newExtraTags, "extra-tags", "", "Extra comma-separated tag names (Agent Assure is always added)")
+	newCmd.Flags().StringVar(&newStart, "start", "", "Timeframe start date (YYYY-MM-DD)")
+	newCmd.Flags().StringVar(&newEnd, "end", "", "Timeframe end date (YYYY-MM-DD)")
+	newCmd.Flags().StringVar(&newGranularity, "granularity", "month", "Timeframe granularity: year|quarter|month|day")
+	featuresCmd.AddCommand(newCmd)
 
 	// --- update ---
 	var updateName string
@@ -106,6 +220,9 @@ func AddFeaturesCmd(parent *cobra.Command, serverURL string, tokenFn func() stri
 	var updateDescription string
 	var updateHealth string
 	var updateHealthComment string
+	var updateTags string
+	var updateAddTags string
+	var updateRemoveTags string
 
 	updateCmd := &cobra.Command{
 		Use:   "update <id>",
@@ -120,7 +237,9 @@ func AddFeaturesCmd(parent *cobra.Command, serverURL string, tokenFn func() stri
 			if err != nil {
 				return fmt.Errorf("build client: %w", err)
 			}
-			return runFeaturesUpdate(cmd.OutOrStdout(), client, args[0], updateName, updateStatus, updateDescription, updateHealth, updateHealthComment)
+			return runFeaturesUpdate(cmd.OutOrStdout(), client, args[0],
+				updateName, updateStatus, updateDescription, updateHealth, updateHealthComment,
+				updateTags, parseTagList(updateAddTags), parseTagList(updateRemoveTags))
 		},
 	}
 	updateCmd.Flags().StringVar(&updateName, "name", "", "New feature name")
@@ -128,6 +247,9 @@ func AddFeaturesCmd(parent *cobra.Command, serverURL string, tokenFn func() stri
 	updateCmd.Flags().StringVar(&updateDescription, "description", "", "New description (HTML)")
 	updateCmd.Flags().StringVar(&updateHealth, "health", "", "Health status: onTrack, atRisk, offTrack, notSet")
 	updateCmd.Flags().StringVar(&updateHealthComment, "health-comment", "", "Comment for the health update (HTML)")
+	updateCmd.Flags().StringVar(&updateTags, "tags", "", "Replace tags with this comma-separated list (use empty list to clear)")
+	updateCmd.Flags().StringVar(&updateAddTags, "add-tags", "", "Comma-separated tag names to add (additive, leaves existing tags)")
+	updateCmd.Flags().StringVar(&updateRemoveTags, "remove-tags", "", "Comma-separated tag names to remove")
 	featuresCmd.AddCommand(updateCmd)
 
 	// --- delete ---
@@ -295,7 +417,7 @@ func runFeaturesGet(w io.Writer, client *entities.ClientWithResponses, id string
 	return output.JSON(w, resp.JSON200)
 }
 
-func runFeaturesCreate(w io.Writer, client *entities.ClientWithResponses, name, componentID, description string) error {
+func runFeaturesCreate(w io.Writer, client *entities.ClientWithResponses, name, componentID, description string, tags []string, startISO, endISO, granularity string) error {
 	featureType := entities.Feature
 
 	fields := entities.EntityCreateOrUpdateFields{}
@@ -326,6 +448,20 @@ func runFeaturesCreate(w io.Writer, client *entities.ClientWithResponses, name, 
 		return fmt.Errorf("build owner field value: %w", err)
 	}
 	fields["owner"] = ownerField
+
+	if len(tags) > 0 {
+		tagsField, err := buildTagsAssign(tags)
+		if err != nil {
+			return err
+		}
+		fields["tags"] = tagsField
+	}
+
+	if tfField, ok, err := buildTimeframe(startISO, endISO, granularity); err != nil {
+		return err
+	} else if ok {
+		fields["timeframe"] = tfField
+	}
 
 	// Build parent relationship
 	var rels []entities.EntityRelationshipCreate
@@ -376,9 +512,15 @@ func runFeaturesCreate(w io.Writer, client *entities.ClientWithResponses, name, 
 	return nil
 }
 
-func runFeaturesUpdate(w io.Writer, client *entities.ClientWithResponses, id, name, statusName, description, health, healthComment string) error {
-	if name == "" && statusName == "" && description == "" && health == "" && healthComment == "" {
-		return fmt.Errorf("at least one of --name, --status, --description, --health, or --health-comment must be provided")
+func runFeaturesUpdate(w io.Writer, client *entities.ClientWithResponses, id, name, statusName, description, health, healthComment, tagsReplace string, addTags, removeTags []string) error {
+	// A non-empty --tags string means "replace with this list". Empty string means flag not set;
+	// to clear all tags use --remove-tags with the current tag names.
+	tagsToReplace := parseTagList(tagsReplace)
+	tagsReplaceSet := len(tagsToReplace) > 0
+
+	if name == "" && statusName == "" && description == "" && health == "" && healthComment == "" &&
+		!tagsReplaceSet && len(addTags) == 0 && len(removeTags) == 0 {
+		return fmt.Errorf("at least one of --name, --status, --description, --health, --health-comment, --tags, --add-tags, or --remove-tags must be provided")
 	}
 
 	uid, err := uuid.Parse(id)
@@ -437,15 +579,60 @@ func runFeaturesUpdate(w io.Writer, client *entities.ClientWithResponses, id, na
 		fields["health"] = healthField
 	}
 
-	body := entities.UpdateEntityJSONRequestBody{
-		Data: &struct {
-			Fields   *entities.EntityCreateOrUpdateFields `json:"fields,omitempty"`
-			Metadata *entities.EntityMetadata             `json:"metadata,omitempty"`
-			Patch    *entities.EntityPatch                `json:"patch,omitempty"`
-		}{
-			Fields: &fields,
-		},
+	if tagsReplaceSet {
+		tagsField, err := buildTagsAssign(tagsToReplace)
+		if err != nil {
+			return err
+		}
+		fields["tags"] = tagsField
 	}
+
+	// Patch operations cannot be combined with `fields` on the same field;
+	// we already enforce that by routing replace through `fields` and add/remove through `patch`.
+	var patch entities.EntityPatch
+	if len(addTags) > 0 {
+		v, err := buildTagsAssign(addTags)
+		if err != nil {
+			return err
+		}
+		var item entities.EntityPatch_Item
+		if err := item.FromEntityPatchOperation(entities.EntityPatchOperation{
+			Op:    entities.AddItems,
+			Path:  "tags",
+			Value: v,
+		}); err != nil {
+			return fmt.Errorf("build add-tags patch: %w", err)
+		}
+		patch = append(patch, item)
+	}
+	if len(removeTags) > 0 {
+		v, err := buildTagsAssign(removeTags)
+		if err != nil {
+			return err
+		}
+		var item entities.EntityPatch_Item
+		if err := item.FromEntityPatchOperation(entities.EntityPatchOperation{
+			Op:    entities.RemoveItems,
+			Path:  "tags",
+			Value: v,
+		}); err != nil {
+			return fmt.Errorf("build remove-tags patch: %w", err)
+		}
+		patch = append(patch, item)
+	}
+
+	bodyData := &struct {
+		Fields   *entities.EntityCreateOrUpdateFields `json:"fields,omitempty"`
+		Metadata *entities.EntityMetadata             `json:"metadata,omitempty"`
+		Patch    *entities.EntityPatch                `json:"patch,omitempty"`
+	}{}
+	if len(fields) > 0 {
+		bodyData.Fields = &fields
+	}
+	if len(patch) > 0 {
+		bodyData.Patch = &patch
+	}
+	body := entities.UpdateEntityJSONRequestBody{Data: bodyData}
 
 	resp, err := client.UpdateEntityWithResponse(context.Background(), uid, body)
 	if err != nil {

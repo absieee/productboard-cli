@@ -51,11 +51,17 @@ pb features list --id-only               # one ID per line
 pb features get <id>                      # get feature detail (JSON)
 pb features create --name "My Feature"   # create in Agent Assure
 pb features create --name "My Feature" --component <id> --description "<p>HTML</p>"
+pb features create --name "My Feature" --tags "Agent Assure,Compliance"
+pb features new    --name "My Feature"   # template: Assurance/Agent Assure + "Agent Assure" tag
+pb features new    --name "My Feature" --extra-tags "Compliance,Q3"
 pb features update <id> --name "New Name"
 pb features update <id> --status done
 pb features update <id> --health onTrack
 pb features update <id> --health atRisk --health-comment "<p>Blocked on infra work</p>"
 pb features update <id> --health-comment "<p>Still on track, minor delays</p>"
+pb features update <id> --add-tags "Agent Assure"          # additive
+pb features update <id> --tags "Agent Assure,Compliance"   # replace
+pb features update <id> --remove-tags "Stale"              # remove
 pb features delete <id>
 ```
 
